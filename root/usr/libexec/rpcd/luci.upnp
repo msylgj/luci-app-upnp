@@ -11,20 +11,29 @@ local methods = {
 			local uci = UCI.cursor()
 			local lease_file = uci:get("upnpd", "config", "upnp_lease_file")
 
+			local nat_table_name = uci:get("upnpd", "config", "upnp_nat_table_name")
+			local nat_chain = uci:get("upnpd", "config", "upnp_nat_chain")
+
+			local upnp_nat_table_name = nat_table_name and nat_table_name or "filter"
+			local upnp_nat_chain = nat_chain and nat_chain or "prerouting_miniupnpd"
+
 			local ipv4_hints = sys.net.ipv4_hints()
 			local rule = { }
 
-			local nft = io.popen("nft -a list table ip miniupnpd 2>/dev/null")
+			local nft = assert(io.popen(string.format("nft -a list chain inet %s %s 2>/dev/null", upnp_nat_table_name, upnp_nat_chain)))
 			if nft then
 				while true do
 					local ln = nft:read("*l")
 					if not ln then
 						break
 					elseif ln:match("^\t\tiif") then
-						local proto, extport, intaddr, intport, num =
-							ln:match("^\t\tiif \".-\" ([A-Za-z]+) dport (%d+) dnat to (%S-):(%d+) # handle (%d+)$")
+						local protonum, extport, intaddr, intport, num =
+							ln:match("^\t\tiif \".-\" @.- (%S-) th dport (%d+) dnat ip to (%S-):(%d+) # handle (%d+)$")
 						local descr = ""
-
+						local proto = "tcp"
+						if protonum == "0x11" then
+							proto = "udp"
+						end
 						if num and proto and extport and intaddr and intport then
 							extport = tonumber(extport)
 							intport = tonumber(intport)
@@ -78,48 +87,54 @@ local methods = {
 		call = function(args)
 			local util = require "luci.util"
 			local idx = args and tonumber(args.token)
-			local res = {}
 
 			if idx and idx > 0 then
 				local uci = UCI.cursor()
+				local proto, protonum, extport, intaddr, intport
 
-				local proto, extport, intaddr, intport
+				local table_name = uci:get("upnpd", "config", "upnp_table_name")
+				local nat_table_name = uci:get("upnpd", "config", "upnp_nat_table_name")
+				local forward_chain = uci:get("upnpd", "config", "upnp_forward_chain")
+				local nat_chain = uci:get("upnpd", "config", "upnp_nat_chain")
 
-				local nft = io.popen("nft -a list table ip miniupnpd 2>/dev/null")
+				local upnp_table_name = table_name and table_name or "filter"
+				local upnp_nat_table_name = nat_table_name and nat_table_name or "filter"
+				local upnp_forward_chain = forward_chain and forward_chain or "miniupnpd"
+				local upnp_nat_chain = nat_chain and nat_chain or "prerouting_miniupnpd"
+
+				local nft = assert(io.popen(string.format("nft -a list chain inet %s %s 2>/dev/null", upnp_nat_table_name, upnp_nat_chain)))
 				if nft then
 					while true do
 						local ln = nft:read("*l")
 						if not ln then
 							break
-						elseif ln:match(string.format("^\t\tiif \".-\" [A-Za-z]+ dport [0-9]+ dnat to .-:[0-9]+ # handle %d$", idx)) then
-							proto, extport, intaddr, intport =
-								ln:match("^\t\tiif \".-\" ([A-Za-z]+) dport (%d+) dnat to (%S-):(%d+) # handle [0-9]+$")
-
-							local protonum = "0x6"
-							if proto == "udp" then
-								protonum = "0x11"
+						elseif ln:match(string.format("^\t\tiif \".-\" @.- 0x[0-9A-Fa-f]+ th dport [0-9]+ dnat ip to .-:[0-9]+ # handle %d$", idx)) then
+							protonum, extport, intaddr, intport =
+								ln:match("^\t\tiif \".-\" @.- (%S-) th dport (%d+) dnat ip to (%S-):(%d+) # handle [0-9]+$")
+							if protonum == "0x6" then
+								proto = "tcp"
+							elseif protonum == "0x11" then
+								proto = "udp"
 							end
-							local nfts = io.popen("nft -a list table inet miniupnpd 2>/dev/null")
-							if nfts then
-								while true do
-									local ln = nfts:read("*l")
-									if not ln then
-										break
-									elseif ln:match(string.format("^\t\tiif \".-\" th dport %d @.- 0x[0-9A-Fa-f]+ @.- %s accept # handle [0-9]+$", extport, protonum)) then
-										local num =
-											ln:match("^\t\tiif \".-\" th dport [0-9]+ @.- 0x[0-9A-Fa-f]+ @.- 0x[0-9A-Fa-f]+ accept # handle (%d+)$")
-										sys.call("nft delete rule inet miniupnpd forward handle %d" % num)
-										sys.call("nft delete rule ip miniupnpd prerouting handle %d" % idx)
-										break
-									end
-								end
-								nfts:close()
-							else
-								break
-							end
+							sys.call(string.format("nft delete rule inet %s %s handle %d", upnp_nat_table_name, upnp_nat_chain, idx))
 						end
 					end
 					nft:close()
+				end
+
+				local nfts = assert(io.popen(string.format("nft -a list chain inet %s %s 2>/dev/null", upnp_table_name, upnp_forward_chain)))
+				if nfts then
+					while true do
+						local ln = nfts:read("*l")
+						if not ln then
+							break
+						elseif ln:match(string.format("^\t\tiif \".-\" th dport %d @.- 0x[0-9A-Fa-f]+ @.- %s accept # handle [0-9]+$", extport, protonum)) then
+							local num =
+								ln:match("^\t\tiif \".-\" th dport [0-9]+ @.- 0x[0-9A-Fa-f]+ @.- 0x[0-9A-Fa-f]+ accept # handle (%d+)$")
+							sys.call(string.format("nft delete rule inet %s %s handle %d", upnp_table_name, upnp_forward_chain, num))
+						end
+					end
+					nfts:close()
 				end
 
 				local lease_file = uci:get("upnpd", "config", "upnp_lease_file")
