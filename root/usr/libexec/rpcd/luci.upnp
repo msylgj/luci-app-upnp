@@ -14,8 +14,8 @@ local methods = {
 			local nat_table_name = uci:get("upnpd", "config", "upnp_nat_table_name")
 			local nat_chain = uci:get("upnpd", "config", "upnp_nat_chain")
 
-			local upnp_nat_table_name = nat_table_name and nat_table_name or "miniupnpd"
-			local upnp_nat_chain = nat_chain and nat_chain or "prerouting"
+			local upnp_nat_table_name = nat_table_name and nat_table_name or "fw4"
+			local upnp_nat_chain = nat_chain and nat_chain or "upnp_prerouting"
 
 			local ipv4_hints = sys.net.ipv4_hints()
 			local rule = { }
@@ -97,10 +97,10 @@ local methods = {
 				local forward_chain = uci:get("upnpd", "config", "upnp_forward_chain")
 				local nat_chain = uci:get("upnpd", "config", "upnp_nat_chain")
 
-				local upnp_table_name = table_name and table_name or "miniupnpd"
-				local upnp_nat_table_name = nat_table_name and nat_table_name or "miniupnpd"
-				local upnp_forward_chain = forward_chain and forward_chain or "forward"
-				local upnp_nat_chain = nat_chain and nat_chain or "prerouting"
+				local upnp_table_name = table_name and table_name or "fw4"
+				local upnp_nat_table_name = nat_table_name and nat_table_name or "fw4"
+				local upnp_forward_chain = forward_chain and forward_chain or "upnp_forward"
+				local upnp_nat_chain = nat_chain and nat_chain or "upnp_prerouting"
 
 				local nft = assert(io.popen(string.format("nft -a list chain inet %s %s 2>/dev/null", upnp_nat_table_name, upnp_nat_chain)))
 				if nft then
